@@ -1,0 +1,14 @@
+If:
+    PathMatch: ring.h
+CompileFlags:
+    Add:
+        - "-I."
+---
+# Without this ring_impl.h shows unhelpful LSP errors everywhere.
+If:
+    PathMatch: ring_impl.h
+CompileFlags:
+    Add:
+        - "-DR_SZ=32"
+        - "-D__FREEDAVE_NET_RING_H_INCLUDED__"
+        - "-DTEST"
