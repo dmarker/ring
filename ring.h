@@ -4,49 +4,16 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#ifndef __FREEDAVE_NET_RING_H__
+#define __FREEDAVE_NET_RING_H__
+
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <sys/types.h>
+
+
 /*
- * This provides a uint16_t and a uint32_t version. The uint16_t is just more
- * compact and has drastically fewer size options: [0,3]
- * While the uint32_t version has size option of [0,19]
- *
- * Two structures are provided but should be treated as opaque:
- *	struct ring16
- *	struct ring32
- *
- * The following static inline functions are provided for uint16_t:
- *	uint16_t	 ring16_count(struct ring16 *rb);
- *	uint16_t	 ring16_free(struct ring16 *rb);
- *	bool		 ring16_full(struct ring16 *rb);
- *	bool		 ring16_empty(struct ring16 *rb);
- *	void		*ring16_read_buffer(struct ring16 *rb, size_t *nbytes)
- *	void		*ring16_write_buffer(struct ring16 *rb, size_t *nbytes);
- *	ssize_t		 ring16_read_advance(struct ring16 *rb, ssize_t nread);
- *	ssize_t		 ring16_write_advance(struct ring16 *rb, ssize_t nwrit);
- * And the same set for uint32_t:
- *	uint32_t	 ring32_count(struct ring32 *rb);
- *	uint32_t	 ring32_free(struct ring32 *rb);
- *	bool		 ring32_full(struct ring32 *rb);
- *	bool		 ring32_empty(struct ring32 *rb);
- *	void		*ring32_read_buffer(struct ring32 *rb, size_t *nbytes)
- *	void		*ring32_write_buffer(struct ring32 *rb, size_t *nbytes);
- *	ssize_t		 ring32_read_advance(struct ring32 *rb, ssize_t nread);
- *	ssize_t		 ring32_write_advance(struct ring32 *rb, ssize_t nwrit);
- *
- * You also need the non-inline functions to create / destroy, either:
- *	int	ring16_init(struct ring16 *rb, uint8_t logpages);
- *	int	ring16_fini(struct ring16 *rb);
- * Or:
- *	int	ring32_init(struct ring32 *rb, uint8_t logpages);
- *	int	ring32_fini(struct ring32 *);
- * Or both.
- *
- * To get those you compile ring.c with R_SZ defined as either 16 or 32. If
- * you want both you have to compile the source twice.
- * 
- * Including this header gets you all the inlines and prototypes. So its only
- * the ring16_init and ring16_fini functions that you will be missing if you
- * don't build ring.c without R_SZ set to 16 (it defaults to 32).
- *
  * What is this? Its a ring buffer that maps the same memory twice in a row.
  * That makes for a ring buffer that you can always read as much space is
  * available in the buffer in a single contiguous read. Likewise you can
@@ -68,28 +35,170 @@
  * `data`. You can't index into `copy` and expect it to work.
  *
  * This means you have to have buffers that are multiples of the page size
- * (probably 4k) not just 4 bytes.
+ * (probably 4k) not just 4 bytes. Additionally they must be powers of 2.
  *
  * These are only suitable for a single threaded (like kqueue(2) event loop)
- * application.
+ * application. See buf_ring(9) for multi producer/consumer scenarios.
  */
-#ifndef __FREEDAVE_NET_RING_H__
-#define __FREEDAVE_NET_RING_H__
+
+struct ring {
+	const uint32_t		capacity;
+	const uint32_t		mask;
+	struct {
+		uint32_t	start;
+		uint32_t	end;
+	}			index;	/* group indices */
+	struct {
+		uint8_t	* const	data;
+		uint8_t	* const	copy;	/* mapped right after data */
+	}			maps;
+};
 
 /*
- * If you only need one size (hint: its 32), just define before including
- * ring.h
+ * This checks validity by making sure `rb` isn't null and has a capacity > 0,
+ * a mask > 0 and using them verifies it is a power of 2.
+ *
+ * This doesn't check that capacity is a multiple of page size though.
  */
-#define	__FREEDAVE_NET_RING_H_INCLUDED__
-#ifdef	R_SZ
-#	include <ring_impl.h>
+#ifdef NDEBUG
+#	define SANITY_CHECK(rb)
 #else
-#	define	R_SZ	16
-#	include <ring_impl.h>
-#	undef	R_SZ
-#	define	R_SZ	32
-#	include <ring_impl.h>
+#	define SANITY_CHECK(rb) {			\
+		assert(rb != NULL);			\
+		assert(rb->capacity != 0);		\
+		assert(rb->mask != 0);			\
+		assert((rb->capacity & rb->mask) == 0);	\
+	}
 #endif
-#undef	__FREEDAVE_NET_RING_H_INCLUDED__
 
+/*
+ * ring_count is the consumed space available to write from. Most other
+ * functions are counting on this one to check `ring` to be
+ * valid.
+ */
+static __inline uint32_t
+ring_count(struct ring *rb)
+{
+	SANITY_CHECK(rb);
+
+	uint32_t count = (rb->index.end - rb->index.start);
+	assert(count <= rb->capacity);
+
+	return (count);
+}
+
+/* ring_free is the available space to read into */
+static __inline uint32_t
+ring_free(struct ring *rb)
+{
+	uint32_t count = ring_count(rb);
+	return (rb->capacity - count);
+}
+
+static __inline bool
+ring_full(struct ring *rb)
+{
+	uint32_t count = ring_count(rb);
+	return (rb->capacity == count);
+}
+
+static __inline bool
+ring_empty(struct ring *rb)
+{
+	SANITY_CHECK(rb);
+	return (rb->index.start == rb->index.end);
+}
+
+static __inline void *
+ring_read_buffer(struct ring *rb, size_t *nbytes)
+{
+	void *result;
+	uint32_t avail = ring_free(rb);
+
+	result = (avail > 0) ? &rb->maps.data[rb->index.end & rb->mask] : NULL;
+	if (nbytes != NULL)
+		*nbytes = avail;
+
+	return (result);
+}
+
+static __inline void *
+ring_write_buffer(struct ring *rb, size_t *nbytes)
+{
+	void *result;
+	uint32_t count = ring_count(rb);
+
+	result = (count > 0) ? &rb->maps.data[rb->index.start & rb->mask] : NULL;
+	if (nbytes != NULL)
+		*nbytes = count;
+
+	return (result);
+}
+
+static __inline ssize_t
+ring_read_advance(struct ring *rb, ssize_t nread)
+{
+	SANITY_CHECK(rb);
+
+	/* on a failed read we don't advance */
+	if (nread == -1)
+		return (nread);
+
+	assert(nread <= rb->capacity);
+	rb->index.end += nread;
+
+	return (nread);
+}
+
+static __inline ssize_t
+ring_write_advance(struct ring *rb, ssize_t nwrit)
+{
+	SANITY_CHECK(rb);
+
+	/* on a failed write we don't advance */
+	if (nwrit == -1)
+		return (nwrit);
+
+	assert(nwrit <= rb->capacity);
+	rb->index.start += nwrit;
+
+	return (nwrit);
+}
+
+
+/*
+ * The only 2 functions that aren't inline.
+ *
+ * For ring_init you have to pass a `struct ring` that will be filled out and
+ * have memory mapped in for you. Much like MAP_ALIGNED for mmap, the second
+ * argument to ring_init is a binary logarithm of the number of pages you want
+ * mapped. For a 4k page, valid values are [0,19].
+ *
+ * These will return -1 on failure and set `errno`, they don't assert.
+ */
+int	ring_init(struct ring *, uint8_t);
+int	ring_fini(struct ring *);
+
+
+#ifdef TEST
+/*
+ * These two functions are intentionally using different pointers to show that
+ * they are mapped to the same memory. Homage to Beagle Bros.
+ */
+
+static __inline uint8_t
+ring_peek(struct ring *rb, uint32_t idx)
+{
+	assert((idx & rb->mask) == idx);
+	return rb->maps.data[idx & rb->mask];
+}
+
+/* whole point is to show that our copy effects the main data */
+static __inline void
+ring_poke(struct ring *rb, uint32_t idx, uint8_t val)
+{
+	assert((idx & rb->mask) == idx);
+	rb->maps.copy[idx & rb->mask] = val;
+}
+#endif /* TEST */
 #endif /* __FREEDAVE_NET_RING_H__ */

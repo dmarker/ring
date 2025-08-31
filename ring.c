@@ -10,60 +10,28 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 
-/* This is the file that actually implements everything. ring16.c just includes
- * this file. By default with no R_SZ specified you get 32 (which is probably
- * what you want anyway).
- */
-#ifndef R_SZ
-#	define R_SZ	32
-#endif
-
-#define __FREEDAVE_NET_RING_H_INCLUDED__
-#include "ring_impl.h"
+#include "ring.h"
 
 /*
- * For a `struct ring16` and `uint16_t` we can't accurately represent a capacity
- * of the max size. Because its 2^16 - 1. That breaks our rules that we must be
- * a power of 2 as well as a multiple of page size (itself a power of 2).
+ * For a `struct ring32` we can't accurately represent a capacity of the max
+ * size. Because its 2^32 - 1. That breaks our rules that we must be both a
+ * power of 2 as well as a multiple of page size (itself a power of 2).
  *
- * That means `lgpages` can only be in range [0,3] a small enoug set to say for
- * 4k pages what the outcomes of valid `lgpage` are:
- *	lgpages = 0 -> 1 * 4k =  4k
- *	lgpages = 1 -> 2 * 4k =  8k
- *	lgpages = 2 -> 4 * 4k = 16k
- *	lgpages = 3 -> 8 * 4k = 32k
- *
- * Similar story for `struct ring32` and `uint32_t` but your range is better, its
- * now [0,19]. And 19 gives you 2gb for a buffer size which is already excessive
- * for a ring buffer.
+ * That means `lgpages` can only be in range [0,19] for 4k pages. And using 19
+ * gives you 2gb for a buffer size which is already excessive for a ring buffer.
  *
  * The formula for your buffer size 2^(lgpagesz + lgpages). Usually you have
- * 4k pages which is 2^12. So your size will typically be 2^(12 + lgpages) no
- * matter if its uint16_t or uint32_t. The more important value to know is the
- * page size.
- *
- * Finally, in theory, for `struct ring64` and `uint64_t`, for a range of [0,51]
- * which would allow you a max of 2tb ... which would be insane! I have not and
- * have no intention of testing this size. ring_impl.h arbitrarily doesn't allow
- * it. Its justs theoretically possible to use a uint64_t to index into a byte
- * array. But something may be wrong if you need ring buffers greater than 2gb.
- *
- * uint8_t would not work, it can't even index a full page.
- *
- * A more interesting enhancement would be to switch to shm_create_largepage if
- * the size worked out to be some multiple of a larger page. That still wouldn't
- * require uint64_t.
- *
- * Who knows, maybe that eventually makes sense.
+ * 4k pages which is 2^12. So your size will typically be 2^(12 + lgpages).
+ * The more important value to know is the page size.
  */
 int
-RING_INIT(RINGSZ *rb, uint8_t lgpages)
+ring_init(struct ring *rb, uint8_t lgpages)
 {
 	int shm;
-	UINTSZ_T pagesz = (UINTSZ_T) getpagesize();
+	uint32_t pagesz = (uint32_t) getpagesize();
 	int lgpagesz = ffsl(pagesz) - 1; /* for MAP_ALIGNED */
 
-	UINTSZ_T capacity;
+	uint32_t capacity;
 	uint8_t	*data, *copy;
 
 
@@ -72,11 +40,7 @@ RING_INIT(RINGSZ *rb, uint8_t lgpages)
 		return (-1);
 	}
 
-	/*
-	 * Make sure we can actually handle the size.
-	 * This may seem overly complicated but it works for all possible R_SZ
-	 * without having to change anything.
-	 */
+	/* Make sure we can actually handle the size. */
 	if ((lgpagesz + lgpages) > (8 * sizeof(rb->capacity) - 1)) {
 		errno = EDOM;
 		return (-1);
@@ -135,7 +99,7 @@ RING_INIT(RINGSZ *rb, uint8_t lgpages)
 	 * kind of annoying way to initialize rb by memcpy, all part of the
 	 * `const compromise` for structure members.
 	 */
-	RINGSZ initializer = {
+	struct ring initializer = {
 		.capacity = capacity,
 		.mask = capacity - 1,
 		.index = { .start = 0, .end = 0 },
@@ -148,7 +112,7 @@ RING_INIT(RINGSZ *rb, uint8_t lgpages)
 
 
 int
-RING_FINI(RINGSZ *rb)
+ring_fini(struct ring *rb)
 {
 
 	if (rb == NULL) {

@@ -15,8 +15,8 @@ SHLIB_MAJOR=0
 WITHOUT_PROFILE=1
 MK_DEBUG_FILES= no
 
-SRCS=	ring16.c ring32.c
-INCS=	ring.h ring_impl.h
+SRCS=	ring.c
+INCS=	ring.h
 
 # TODO: make tests
 # TODO: make man page

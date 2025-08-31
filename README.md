@@ -40,9 +40,8 @@ ultimately I chose an interface that lends itself to an event loop and is
 friendly with both [read(2)][21]/[write(2)][22] (for files) as well as
 [recv(2)][23]/[send(2)][24] (for sockets). And because I was having far too much
 fun I made it parameterizable (yeah C macros) for the storage type of the index.
-So you can make it using uint16_t or uint32_t for index variables.
-
-I regret nothing!
+But I have since decided that is of no utility and only the one version is
+easier to work with.
 
 You should _not_ require [readv(2)][25]/[writev(2)][26] _nor_
 [recvmsg(2)][27]/[sendmsg(2)][28]. That is the whole motivation.
@@ -50,8 +49,8 @@ You should _not_ require [readv(2)][25]/[writev(2)][26] _nor_
 In addition to using this new (to me) technique of mapping the same memory
 back to back I continued to use the trick of AND for fast modulus of a power
 of 2 and letting the `start` and `end` indexes just "wrap" using unsigned rules.
-This requires the masking for the `ring[16|32]_read_buffer` and
-`ring[16|32]_write_buffer` functions since the values can have gone way past
+This requires the masking for the `ring_read_buffer` and
+`ring_write_buffer` functions since the values can have gone way past
 the size before wrapping. But the power of 2 mask (modulus) always keeps it
 starting somewhere you can index off the first buffer. Which means I never
 require more than 2 maps to the same memory.
@@ -84,10 +83,9 @@ buffer in under 100 lines.
 #include <sysexits.h>
 #include <unistd.h>
 
-#define R_SZ    32 /* probably allways */
 #include "ring.h"
 
-static struct ring32 OneRing;		/* to rule them all */
+static struct ring OneRing;		/* to rule them all */
 
 static void
 set_nonblocking(int fd)
@@ -107,7 +105,7 @@ set_nonblocking(int fd)
 static void
 err_cleanup(int _)
 {
-	ring32_fini(&OneRing);
+	ring_fini(&OneRing);
 }
 
 int
@@ -118,8 +116,8 @@ main()
 	size_t spc;
 
 	/* just one page */
-	if (ring32_init(&OneRing, 0) == -1) err(
-		EX_OSERR, "ring32_init failed"
+	if (ring_init(&OneRing, 0) == -1) err(
+		EX_OSERR, "ring_init failed"
 	); else {
 		/* blindly calls fini so set up after successful init */
 		err_set_exit(err_cleanup);
@@ -129,11 +127,11 @@ main()
 
 	do {
 		/* This is what I mean by friendly to the existing API */
-		rc = ring32_read_advance(
+		rc = ring_read_advance(
 			&OneRing,	/* to find them */
 			read(
 				STDIN_FILENO,
-				ring32_read_buffer(&OneRing, &spc),
+				ring_read_buffer(&OneRing, &spc),
 				spc
 			)
 		);
@@ -147,11 +145,11 @@ main()
 			EX_OSERR, "failed to read into buffer"
 		);
 
-		rc = ring32_write_advance(
+		rc = ring_write_advance(
 			&OneRing,	/* to bring them all, */
 			write(
 				STDOUT_FILENO,
-				ring32_write_buffer(&OneRing, &spc),
+				ring_write_buffer(&OneRing, &spc),
 				spc
 			)
 		);
@@ -160,10 +158,10 @@ main()
 		);
 	} while (
 					/* and in the darkness bind them! */
-		!(eof && ring32_empty(&OneRing))
+		!(eof && ring_empty(&OneRing))
 	);
 
-	ring32_fini(&OneRing);
+	ring_fini(&OneRing);
 	return (0);
 }
 ```
