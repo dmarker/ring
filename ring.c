@@ -119,7 +119,7 @@ ring_fini(struct ring *rb)
 		errno = EINVAL;
 		return (-1);
 	}
-	if (rb->capacity == 0) {
+	if (rb->capacity == 0) { /* to catch double free */
 		errno = ENXIO;
 		return (-1);
 	}

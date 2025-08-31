@@ -5,8 +5,10 @@
 #
 #
 
-LIBDIR= /usr/local/lib
-INCSDIR= /usr/local/include
+LOCALBASE?=/usr/local
+LIBDIR= ${LOCALBASE}/lib
+INCSDIR= ${LOCALBASE}/include
+SHAREDIR=${LOCALBASE}/share
 
 PACKAGE=lib${LIB}
 LIB=            ring
@@ -18,7 +20,11 @@ MK_DEBUG_FILES= no
 SRCS=	ring.c
 INCS=	ring.h
 
+DIRS+=	MAN3
+MAN3=	${MANDIR}3
+
+MAN=	ring.3
+
 # TODO: make tests
-# TODO: make man page
 
 .include <bsd.lib.mk>

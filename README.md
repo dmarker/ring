@@ -90,13 +90,11 @@ static struct ring OneRing;		/* to rule them all */
 static void
 set_nonblocking(int fd)
 {
-	int flags;
+	int flags = fcntl(fd, F_GETFL);
 
-	flags = fcntl(fd, F_GETFL);
 	if (flags == -1) err(
 		EX_OSERR, "fcntl: can't retrieve flags"
 	);
-
 	if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) err(
 		EX_OSERR, "fcntl: can't set flags"
 	);

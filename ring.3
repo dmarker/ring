@@ -1,0 +1,331 @@
+.\"
+.\" Copyright (c) 2025 David Marker <dave@freedave.net>
+.\"
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.Dd August 31, 2025
+.Dt RING 3
+.Os
+.Sh NAME
+.Nm ring ,
+.Nm ring_init ,
+.Nm ring_fini ,
+.Nm ring_count ,
+.Nm ring_free ,
+.Nm ring_full ,
+.Nm ring_empty ,
+.Nm ring_read_buffer ,
+.Nm ring_read_advance ,
+.Nm ring_write_buffer ,
+.Nm ring_write_advance
+.Nd single-producer/consumer ring buffer suitable for an event loop
+.Sh SYNOPSIS
+.In ring.h
+.Ft int
+.Fn ring_init "struct ring *rb" "uint8_t lgpages"
+.Ft int
+.Fn ring_fini "struct ring *rb"
+.Ft uint32_t
+.Fn ring_count "struct ring *rb"
+.Ft uint32_t
+.Fn ring_free "struct ring *rb"
+.Ft bool
+.Fn ring_full "struct ring *rb"
+.Ft bool
+.Fn ring_empty "struct ring *rb"
+.Ft void *
+.Fn ring_read_buffer "struct ring *rb" "size_t *nbytes"
+.Ft ssize_t
+.Fn ring_read_advance "struct ring *rb" "ssize_t nread"
+.Ft void *
+.Fn ring_write_buffer "struct ring *rb" "size_t *nbytes"
+.Ft ssize_t
+.Fn ring_write_advance "struct ring *rb" "ssize_t nwrit"
+.Sh DESCRIPTION
+The
+.Nm
+functions provide a single-producer/consumer ring buffer suitable for an event
+loop.
+No locking is provided.
+What makes this buffer special is that it maps memory twice back to back.
+This means you never need struct iovec for
+.Xr readv 2
+or
+.Xr writev 2 .
+It also means you never need a struct mmsghdr for
+.Xr recvmmsg 2
+or
+.Xr sendmsg 2 .
+But even though you don't have to use scatter gather functions you get the same
+benefit of reading or writing the maximum amount at any time.
+But you get this with just
+.Xr read 2
+/
+.Xr recv 2 ,
+or
+.Xr write 2
+/
+.Xr send 2 .
+The example shows the smallest possible program that does this.
+.Pp
+The
+.Fn ring_init
+function is used to allocate buffer space and fill in the struct ring *
+.Fa rb
+passed in.
+The capacity is the page size multiplied by 2 raised to the power of
+.Fa lgpages .
+This forces the buffer into compliance because you will have a power of
+2 for the buffer size and it will be a multiple of system pages (already a
+power of 2). Valid values are in the range [0,19] for 4k pages.
+.Pp
+The
+.Fn ring_fini
+function is used to free buffer space associated with a struct ring.
+.Pp
+The
+.Fn ring_count
+function is used to get the count of bytes consumed in the ring buffer.
+These bytes are available to
+.Xr write 2
+or
+.Xr send 2
+from the buffer.
+.Pp
+The
+.Fn ring_free
+function is used to get the count of bytes available in the ring buffer.
+This space is available to
+.Xr read 2
+or
+.Xr recv 2
+into the buffer.
+.Pp
+The
+.Fn ring_full
+function returns
+.Dv true
+when there is no more space to either
+.Xr read 2
+or
+.Xr recv 2
+into the buffer.
+Otherwise it returns
+.Dv false .
+.Pp
+The
+.Fn ring_empty
+function returns
+.Dv true
+when there is nothing in the buffer.
+Otherwise it returns
+.Dv false .
+.Pp
+The
+.Fn ring_read_buffer
+function returns either
+.Dv NULL
+when there is no space or a pointer into the next available location to either
+pass to
+.Xr read 2
+or
+.Xr recv 2 .
+If
+.Fa nbytes
+is not
+.Dv NULL
+it is filled in with the space available for your next
+.Xr read 2
+or
+.Xr recv 2 .
+.Pp
+The
+.Fn ring_read_advance
+function updates the ring internals to account for
+.Fa nread
+bytes being added to the buffer.
+If \-1 is given for
+.Fa nread
+as happens when either
+.Xr read 2
+or
+.Xr recv 2
+fails, the ring is not updated.
+.Pp
+The
+.Fn ring_write_buffer
+function returns either
+.Dv NULL
+when the buffer is empty or a pointer to the beginning of data in the buffer.
+If
+.Fa nbytes
+is not
+.Dv NULL
+it is filled in with the count of bytes available to
+.Xr write 2
+or
+.Xr send 2 .
+.Pp
+The
+.Fn ring_write_advance
+function updates the ring internals to account for
+.Fa nwrit
+bytes being consumed from the buffer.
+If \-1 is given for
+.Fa nwrit
+as happens when either
+.Xr write 2
+or
+.Xr send 2
+fails, the ring is not updated.
+.Sh RETURN VALUES
+The
+.Fn ring_init
+and
+.Fn ring_fini
+functions return \-1 if there was an error and set
+.Va errno
+accordingly.
+.Pp
+For
+.Fn ring_init ,
+.Va errno
+can be set to one of the errors that indicate
+.Xr mmap 2
+failed and additionally will fail with:
+.Bl -tag -width Er
+.It Bq Er EINVAL
+When
+.Fa rb
+is
+.Dv NULL
+.It Bq Er EDOM
+When
+.Fa lgpages
+is too large.
+.El
+.Pp
+For
+.Fn ring_fini ,
+.Va errno
+will be set with:
+.Bl -tag -width Er
+.It Bq Er EINVAL
+When
+.Fa rb
+is
+.Dv NULL
+.It Bq Er ENXIO
+When
+.Fa rb
+is invalid.
+This is likely to happen if you repeat calls to
+.Fn ring_fini
+for the same ring.
+Essentially a "double free" attempt.
+.El
+.Sh EXAMPLES
+This is the smallest example and doesn't even require
+.Xr kqueue 2 .
+It just copies its
+.Dv STDIN
+to
+.Dv STDOUT .
+.Bd -literal -offset 4n
+#include <err.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <sysexits.h>
+#include <unistd.h>
+
+#include "ring.h"
+
+static struct ring OneRing;		/* to rule them all */
+
+static void
+set_nonblocking(int fd)
+{
+	int flags = fcntl(fd, F_GETFL);
+
+	if (flags == -1) err(
+		EX_OSERR, "fcntl: can't retrieve flags"
+	);
+	if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) err(
+		EX_OSERR, "fcntl: can't set flags"
+	);
+}
+
+static void
+err_cleanup(int _)
+{
+	ring_fini(&OneRing);
+}
+
+int
+main()
+{
+	bool eof = false;
+	ssize_t rc;
+	size_t spc;
+
+	/* just one page */
+	if (ring_init(&OneRing, 0) == -1) err(
+		EX_OSERR, "ring_init failed"
+	); else {
+		/* blindly calls fini so set up after successful init */
+		err_set_exit(err_cleanup);
+	}
+	set_nonblocking(STDIN_FILENO);
+	set_nonblocking(STDOUT_FILENO);
+
+	do {
+		/* This is what I mean by friendly to the existing API */
+		rc = ring_read_advance(
+			&OneRing,	/* to find them */
+			read(
+				STDIN_FILENO,
+				ring_read_buffer(&OneRing, &spc),
+				spc
+			)
+		);
+		if (rc == 0 && spc != 0) {
+			/*
+			 * only if we could have read something does it matter
+			 * when we received nothing. That is EOF.
+			 */
+			eof = true;
+		} else if (rc == -1 && errno != EAGAIN) err(
+			EX_OSERR, "failed to read into buffer"
+		);
+
+		rc = ring_write_advance(
+			&OneRing,	/* to bring them all, */
+			write(
+				STDOUT_FILENO,
+				ring_write_buffer(&OneRing, &spc),
+				spc
+			)
+		);
+		if (rc == -1 && errno != EAGAIN) err(
+			EX_OSERR, "failed to write from buffer"
+		);
+	} while (
+					/* and in the darkness bind them! */
+		!(eof && ring_empty(&OneRing))
+	);
+
+	ring_fini(&OneRing);
+	return (0);
+}
+.Ed
+.Sh SEE ALSO
+.Xr kqueue 2 ,
+.Xr read 2 ,
+.Xr recv 2 ,
+.Xr send 2 ,
+.Xr write 2 ,
+.Xr buf_ring 9
+.Sh HISTORY
+These functions were written for
+.Fx 15.0 .
